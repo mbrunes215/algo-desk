@@ -50,6 +50,10 @@ def run_once(strategy: FundingArbStrategy) -> None:
                 f"{opp.net_annual_yield:.1%} net annualized | "
                 f"${opp.recommended_notional_usd:,.0f}/leg"
             )
+        # Execute paper trade for the best opportunity
+        signal = strategy.generate_signals()
+        if signal.signal:
+            strategy.execute_trade(signal)
     else:
         logger.info(f"No opportunities above {strategy.MIN_NET_YIELD:.0%} net threshold")
 
