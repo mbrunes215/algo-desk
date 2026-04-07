@@ -22,6 +22,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from strategies.crypto_funding_arb import FundingArbStrategy
+from strategies.base_strategy import StrategyResult
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,16 +45,33 @@ def run_once(strategy: FundingArbStrategy) -> None:
     opportunities = strategy.find_opportunities(snapshots)
     if opportunities:
         logger.info(f"{len(opportunities)} opportunity(s) found above {strategy.MIN_NET_YIELD:.0%} threshold")
+        best = max(opportunities, key=lambda o: o.net_annual_yield)
         for opp in sorted(opportunities, key=lambda o: o.net_annual_yield, reverse=True):
             logger.info(
                 f"  → {opp.symbol} on {opp.exchange}: "
                 f"{opp.net_annual_yield:.1%} net annualized | "
                 f"${opp.recommended_notional_usd:,.0f}/leg"
             )
-        # Execute paper trade for the best opportunity
-        signal = strategy.generate_signals()
-        if signal.signal:
-            strategy.execute_trade(signal)
+        # Build signal from already-fetched data — no second API call
+        signal = StrategyResult(
+            signal=True,
+            confidence=min(best.net_annual_yield / 0.30, 1.0),
+            side="BUY",
+            size=1,
+            metadata={
+                "symbol": best.symbol,
+                "exchange": best.exchange,
+                "funding_rate": best.funding_rate,
+                "annualized_rate": best.annualized_rate,
+                "net_annual_yield": best.net_annual_yield,
+                "spot_price": best.spot_price,
+                "perp_price": best.perp_price,
+                "basis_pct": best.basis_pct,
+                "notional_usd": best.recommended_notional_usd,
+                "all_opportunities": len(opportunities),
+            },
+        )
+        strategy.execute_trade(signal)
     else:
         logger.info(f"No opportunities above {strategy.MIN_NET_YIELD:.0%} net threshold")
 
