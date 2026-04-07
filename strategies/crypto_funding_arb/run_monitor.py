@@ -32,24 +32,26 @@ logging.basicConfig(
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
 
+logger = logging.getLogger(__name__)
+
 
 def run_once(strategy: FundingArbStrategy) -> None:
     """Run one full scan cycle."""
-    print("\nScanning funding rates...")
+    logger.info("Scanning funding rates")  # parsed by daily_report.py to count scans
     snapshots = strategy.scan_rates()
     strategy.print_rate_table(snapshots)
 
     opportunities = strategy.find_opportunities(snapshots)
     if opportunities:
-        print(f"🟢 {len(opportunities)} opportunity(s) found above {strategy.MIN_NET_YIELD:.0%} threshold:\n")
+        logger.info(f"{len(opportunities)} opportunity(s) found above {strategy.MIN_NET_YIELD:.0%} threshold")
         for opp in sorted(opportunities, key=lambda o: o.net_annual_yield, reverse=True):
-            print(
+            logger.info(
                 f"  → {opp.symbol} on {opp.exchange}: "
                 f"{opp.net_annual_yield:.1%} net annualized | "
                 f"${opp.recommended_notional_usd:,.0f}/leg"
             )
     else:
-        print(f"⚪ No opportunities above {strategy.MIN_NET_YIELD:.0%} net threshold right now.")
+        logger.info(f"No opportunities above {strategy.MIN_NET_YIELD:.0%} net threshold")
 
     strategy.print_open_positions()
 
