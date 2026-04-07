@@ -45,12 +45,15 @@ DATA SOURCE:
   Prices fetched every SCAN_INTERVAL_MINUTES (default 5 min).
 """
 
+import json
 import logging
 import math
+import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import requests
@@ -67,6 +70,9 @@ KRAKEN_SPOT_URL = "https://api.kraken.com/0/public/Ticker"
 # Kraken tickers for BTC and ETH
 BTC_TICKER = "XBTUSD"
 ETH_TICKER = "ETHUSD"
+
+# State persistence — survives restarts
+STATE_FILE = Path(__file__).parent.parent.parent / "logs" / "pairs_state.json"
 
 # Kraken returns XXBTZUSD and XETHZUSD — map back
 KRAKEN_PAIR_MAP = {
@@ -187,11 +193,59 @@ class PairsTradingStrategy(BaseStrategy):
         # Closed positions (for P&L tracking)
         self.closed_positions: List[Dict] = []
 
+        # Reload price history from disk if available (survives restarts)
+        self._load_state()
+
         logger.info(
             f"PairsTradingStrategy initialized | paper={paper_mode} | "
             f"entry_z={self.ENTRY_Z} | exit_z={self.EXIT_Z} | "
             f"window={self.WINDOW} obs | position=${self.POSITION_USD}/leg"
         )
+
+    def _save_state(self) -> None:
+        """Persist price history to disk so restarts don't wipe warmup progress."""
+        try:
+            STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+                "price_history": [
+                    {
+                        "timestamp": s.timestamp.isoformat(),
+                        "btc_price": s.btc_price,
+                        "eth_price": s.eth_price,
+                        "log_spread": s.log_spread,
+                        "ratio": s.ratio,
+                    }
+                    for s in self._price_history
+                ],
+            }
+            STATE_FILE.write_text(json.dumps(data))
+        except Exception as e:
+            logger.warning(f"Could not save pairs state: {e}")
+
+    def _load_state(self) -> None:
+        """Reload price history from disk on startup."""
+        if not STATE_FILE.exists():
+            return
+        try:
+            data = json.loads(STATE_FILE.read_text())
+            history = data.get("price_history", [])
+            for entry in history:
+                snap = PriceSnapshot(
+                    timestamp=datetime.fromisoformat(entry["timestamp"]),
+                    btc_price=entry["btc_price"],
+                    eth_price=entry["eth_price"],
+                    log_spread=entry["log_spread"],
+                    ratio=entry["ratio"],
+                )
+                self._price_history.append(snap)
+                self._spread_window.append(snap.log_spread)
+            logger.info(
+                f"Restored {len(self._price_history)} observations from disk "
+                f"(saved {data.get('saved_at', 'unknown')})"
+            )
+        except Exception as e:
+            logger.warning(f"Could not load pairs state: {e} — starting fresh")
 
     # ─── Price fetching ───────────────────────────────────────────────────────
 
@@ -244,6 +298,8 @@ class PairsTradingStrategy(BaseStrategy):
         # Keep history bounded
         if len(self._price_history) > self.WINDOW * 2:
             self._price_history = self._price_history[-self.WINDOW:]
+        # Persist to disk so restarts don't lose warmup progress
+        self._save_state()
 
         logger.debug(
             f"Prices: BTC=${btc:,.0f} ETH=${eth:,.2f} "
