@@ -1,0 +1,68 @@
+---
+# Strategy Configuration
+# This file defines all active and inactive trading strategies
+
+# Kalshi Weather Strategy
+# ARCHIVED 2026-03-26: zero-volume structural issue, $20/week ceiling confirmed
+# Code preserved — DO NOT re-enable without structural market change
+kalshi_weather:
+  enabled: false
+  params:
+    min_edge: 0.05
+    max_position: 100
+    markets:
+      - temperature
+      - precipitation
+
+# Kalshi Economic Strategy
+# Trades on economic event prediction markets
+kalshi_econ:
+  enabled: true
+  params:
+    min_edge: 0.03
+    events:
+      - CPI
+      - NFP
+      - GDP
+
+# Crypto Funding Rate Arbitrage Strategy
+# Delta-neutral: spot long + perp short to collect 8-hourly funding payments
+# No directional risk when properly hedged — edge is structural, not predictive
+crypto_funding_arb:
+  enabled: true
+  params:
+    min_net_yield: 0.08       # 8% annualized net of fees to open a position
+    exit_yield: 0.04          # 4% — close if yield drops here
+    max_basis_pct: 0.005      # 0.5% max spot/perp divergence at entry
+    position_size_usd: 500    # USD notional per leg (both legs = $1000 total deployed)
+    max_positions: 6          # Max concurrent arb positions (3 symbols × 2 exchanges)
+    symbols:
+      - BTC
+      - ETH
+      - SOL
+
+# BTC/ETH Pairs Trading Strategy
+# Market-neutral cointegration stat arb — trades the log spread Z-score
+# Uncorrelated to funding arb — earns from spread reversion not rate direction
+pairs_trading:
+  enabled: true
+  params:
+    entry_z: 2.0            # Open when |Z-score| exceeds this
+    exit_z: 0.5             # Close when |Z-score| drops below this
+    stop_z: 3.5             # Stop-loss if spread widens beyond this
+    window: 288             # Rolling window (288 × 5min = 24 hours)
+    position_size_usd: 500  # USD notional per leg ($1000 total deployed)
+    max_positions: 2        # Max concurrent pairs positions
+    max_hold_hours: 72      # Force close after 72 hours regardless
+
+# IBKR Mean Reversion Strategy
+# Trades on mean reversion patterns for US equities
+ibkr_mean_reversion:
+  enabled: false
+  params:
+    lookback: 20
+    z_threshold: 2.0
+    symbols:
+      - SPY
+      - QQQ
+      - IWM

@@ -1,0 +1,39 @@
+---
+# Algo Trading Desk Configuration
+# This file contains all configuration settings for the trading system
+
+# Interactive Brokers Configuration
+ibkr:
+  host: "127.0.0.1"
+  port: 7497
+  client_id: 1
+  account: "YOUR_ACCOUNT_HERE"
+  paper_trading: true
+
+# Kalshi Exchange Configuration
+kalshi:
+  api_base_url: "https://api.kalshi.com/v1"
+  email: "YOUR_KALSHI_EMAIL_HERE"
+  password: "YOUR_KALSHI_PASSWORD_HERE"
+
+# Database Configuration
+database:
+  type: "sqlite"
+  path: "data/storage/trades.db"
+
+# Anthropic Claude Configuration
+claude:
+  model: "claude-sonnet-4-20250514"
+  max_tokens: 4096
+
+# Risk Management Configuration
+risk:
+  max_daily_loss_pct: 0.03
+  max_position_pct: 0.02
+  max_trades_per_day: 50
+  kill_switch_enabled: true
+
+# Monitoring and Alerting Configuration
+monitoring:
+  alert_email: "YOUR_ALERT_EMAIL_HERE"
+  check_interval_seconds: 30

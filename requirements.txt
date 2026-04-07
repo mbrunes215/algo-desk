@@ -1,0 +1,44 @@
+# Interactive Brokers API
+ib_insync==0.9.86
+
+# HTTP and API requests
+requests>=2.31.0
+
+# Data processing and analysis
+pandas>=2.2.2
+numpy>=1.26.4
+scipy>=1.13.0
+
+# Configuration management
+PyYAML>=6.0.1
+python-dotenv>=1.0.0
+
+# Database ORM and async support
+SQLAlchemy>=2.0.23
+aiosqlite>=0.19.0
+
+# Anthropic Claude API
+anthropic>=0.25.0
+
+# Visualization
+matplotlib>=3.8.2
+seaborn>=0.13.0
+
+# Task scheduling
+schedule>=1.2.0
+
+# System monitoring
+psutil>=5.9.6
+
+# Testing framework
+pytest>=7.4.3
+pytest-asyncio>=0.21.1
+pytest-cov>=4.1.0
+
+# Code quality
+black>=23.12.0
+flake8>=6.1.0
+
+# Utilities
+python-dateutil>=2.8.2
+pytz>=2023.3
