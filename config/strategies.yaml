@@ -32,7 +32,7 @@ kalshi_econ:
 crypto_funding_arb:
   enabled: true
   params:
-    # Standard arb (positive funding rates)
+    # Default thresholds (apply to any symbol without an override)
     min_net_yield: 0.08       # 8% annualized net of fees to open a position
     exit_yield: 0.04          # 4% — close if yield drops here
     # Reverse arb (negative funding rates — risk-off environments)
@@ -43,10 +43,22 @@ crypto_funding_arb:
     max_basis_pct: 0.005      # 0.5% max spot/perp divergence at entry
     position_size_usd: 500    # USD notional per leg (both legs = $1000 total deployed)
     max_positions: 6          # Max concurrent arb positions (standard + reverse combined)
+    max_hold_hours: 168       # 7 days — force-close stale positions (0 = disabled)
     symbols:
       - BTC
       - ETH
       - SOL
+    # Per-symbol threshold overrides — ETH funding is volatile and decays fast,
+    # so we require a higher entry to avoid churn (open at 8%, exit at 2%)
+    symbol_overrides:
+      ETH:
+        min_net_yield: 0.30     # 30% annualized — ETH only enters on strong rates
+        exit_yield: 0.06        # 6% — tighter exit since we entered high
+        min_reverse_yield: 0.30
+        exit_reverse_yield: 0.06
+      SOL:
+        min_net_yield: 0.15     # 15% — SOL rates are noisy, need higher bar
+        min_reverse_yield: 0.15
 
 # BTC/ETH Pairs Trading Strategy
 # Market-neutral cointegration stat arb — trades the log spread Z-score
@@ -57,7 +69,7 @@ pairs_trading:
     entry_z: 2.0            # Open when |Z-score| exceeds this
     exit_z: 0.5             # Close when |Z-score| drops below this
     stop_z: 3.5             # Stop-loss if spread widens beyond this
-    window: 288             # Rolling window (288 × 5min = 24 hours)
+    window: 2016            # Rolling window (2016 × 5min = 7 days — more stable Z-score)
     position_size_usd: 500  # USD notional per leg ($1000 total deployed)
     max_positions: 2        # Max concurrent pairs positions
     max_hold_hours: 72      # Force close after 72 hours regardless

@@ -74,14 +74,25 @@ def parse_log(log_path: Path, since: datetime) -> dict:
         return summary
 
     # Regex patterns
+    # NOTE: These must match the EXACT log format in funding_arb_strategy.py.
+    # Bot logs:  [PAPER] OPEN ARB [STANDARD]: ETH on Kraken | ... notional=$500 ... net |yield|=8.5% ann
+    # Bot logs:  EXIT signal: ETH_Kraken [STANDARD] | yield=2.1% ...
+    # Bot logs:  EXIT signal: ETH_Kraken_reverse [REVERSE] | |yield|=2.1% ...
     re_timestamp = re.compile(r"^(\d{2}:\d{2}:\d{2})")
     re_rate_line = re.compile(
-        r"(Kraken|Coinbase)\s+(\w+):\s+rate=([0-9.\-]+)\s+\(([0-9.\-]+)%\s+ann\).*net=([0-9.\-]+)%.*basis=([0-9.\-]+)%.*spot=\$([0-9,]+)"
+        r"(Kraken|Coinbase|Binance)\s+(\w+):\s+rate=([0-9.\-]+)\s+\(([0-9.\-]+)%\s+ann\).*net=([0-9.\-]+)%.*basis=([0-9.\-]+)%.*spot=\$([0-9,]+)"
     )
+    # Matches both: [PAPER] OPEN ARB [STANDARD]: and [PAPER] OPEN ARB [REVERSE]:
+    # Captures: symbol, exchange, notional, net_yield (handles both "net yield=" and "net |yield|=")
     re_paper_open = re.compile(
-        r"\[PAPER\] OPEN ARB:\s+(\w+)\s+on\s+(\w+).*notional=\$([0-9,]+).*net yield=([0-9.]+)%\s+ann"
+        r"\[PAPER\] OPEN ARB \[(\w+)\]:\s+(\w+)\s+on\s+(\w+)\s+\|.*notional=\$([0-9,]+).*net\s+\|?yield\|?=([0-9.]+)%\s+ann"
     )
-    re_exit = re.compile(r"EXIT signal:\s+(\w+)_(\w+)\s+\|.*yield=([0-9.]+)%")
+    # Matches both standard and reverse exit signals
+    # Standard: EXIT signal: ETH_Kraken [STANDARD] | yield=2.1% ...
+    # Reverse:  EXIT signal: ETH_Kraken_reverse [REVERSE] | |yield|=2.1% ...
+    re_exit = re.compile(
+        r"EXIT signal:\s+(\w+?)(?:_reverse)?\s+\[(\w+)\]\s+\|\s+\|?yield\|?=([0-9.]+)%"
+    )
     re_scan_start = re.compile(r"Scanning funding rates")
     re_warning = re.compile(r"\[(WARNING|ERROR)\]")
 
@@ -123,21 +134,35 @@ def parse_log(log_path: Path, since: datetime) -> dict:
 
         paper_match = re_paper_open.search(line)
         if paper_match:
-            # Groups: symbol, exchange, notional, net_yield (order matches log format)
-            symbol, exchange, notional, net_yield = paper_match.groups()
-            summary["paper_opens"].append({
+            # Groups: direction, symbol, exchange, notional, net_yield
+            direction, symbol, exchange, notional, net_yield = paper_match.groups()
+            # Deduplicate: use symbol_exchange_direction as unique key
+            dedup_key = f"{symbol}_{exchange}_{direction}"
+            trade_entry = {
                 "symbol": symbol,
                 "exchange": exchange,
+                "direction": direction,
                 "net_yield": float(net_yield),
                 "notional": notional,
-            })
+                "_dedup_key": dedup_key,
+            }
+            # Only add if we haven't seen this exact trade today
+            existing_keys = {t.get("_dedup_key") for t in summary["paper_opens"]}
+            if dedup_key not in existing_keys:
+                summary["paper_opens"].append(trade_entry)
 
         exit_match = re_exit.search(line)
         if exit_match:
-            symbol, exchange, yield_val = exit_match.groups()
+            # Groups: pos_key (e.g. "ETH_Kraken"), direction, yield_val
+            pos_key_raw, direction, yield_val = exit_match.groups()
+            # pos_key_raw is like "ETH_Kraken" — split on first underscore
+            parts = pos_key_raw.split("_", 1)
+            symbol = parts[0] if parts else pos_key_raw
+            exchange = parts[1] if len(parts) > 1 else "unknown"
             summary["exit_signals"].append({
                 "symbol": symbol,
                 "exchange": exchange,
+                "direction": direction,
                 "yield": float(yield_val),
             })
 
@@ -159,7 +184,7 @@ def parse_pairs_state(state_path: Path) -> dict:
         "ok": False,
         "error": None,
         "window_size": 0,
-        "window_target": 288,
+        "window_target": 2016,
         "z_score": None,
         "spread_mean": None,
         "spread_std": None,
@@ -196,8 +221,10 @@ def parse_pairs_state(state_path: Path) -> dict:
     result["ratio"] = latest.get("ratio")
 
     # Compute Z-score from rolling window (same logic as pairs_strategy.py)
-    WINDOW = 288
-    MIN_OBS = WINDOW // 4  # 72 — minimum for a valid Z-score
+    # Default window: 2016 (7 days × 288 obs/day). Match strategies.yaml pairs_trading.window
+    WINDOW = 2016
+    result["window_target"] = WINDOW
+    MIN_OBS = max(30, WINDOW // 4)  # At least 30 obs, or 25% of window
     spreads = [h["log_spread"] for h in history[-WINDOW:]]
 
     if len(spreads) >= MIN_OBS:
@@ -300,15 +327,16 @@ def format_report(summary: dict, pairs: dict, since: datetime) -> str:
     if summary["paper_opens"]:
         lines.append("PAPER TRADES OPENED TODAY")
         for t in summary["paper_opens"]:
+            dir_tag = f" [{t.get('direction', 'STD')}]" if t.get("direction") else ""
             lines.append(
-                f"  ✅  {t['symbol']} / {t['exchange']}  |  "
+                f"  ✅  {t['symbol']} / {t['exchange']}{dir_tag}  |  "
                 f"{t['net_yield']:.1f}% net annualized  |  "
                 f"${t['notional']}/leg"
             )
         lines.append("")
     else:
         lines.append("PAPER TRADES OPENED TODAY")
-        lines.append("  None — rates below 8% threshold all day.")
+        lines.append("  None — rates below threshold all day.")
         lines.append("")
 
     # ── Exit signals ──

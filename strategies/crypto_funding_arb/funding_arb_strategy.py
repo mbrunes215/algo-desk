@@ -336,6 +336,20 @@ class FundingArbStrategy(BaseStrategy):
             self.REVERSE_ENABLED = config.get("reverse_enabled", self.REVERSE_ENABLED)
             self.MIN_REVERSE_YIELD = config.get("min_reverse_yield", self.MIN_REVERSE_YIELD)
             self.EXIT_REVERSE_YIELD = config.get("exit_reverse_yield", self.EXIT_REVERSE_YIELD)
+            # Max hold time in hours (0 = disabled, uses MAX_HOLD_DAYS for stale cleanup only)
+            max_hold_h = config.get("max_hold_hours", 0)
+            if max_hold_h > 0:
+                self.MAX_HOLD_HOURS = max_hold_h
+            else:
+                self.MAX_HOLD_HOURS = 0  # Disabled — only MAX_HOLD_DAYS cleanup on restart
+
+        # Per-symbol threshold overrides — allows tighter/looser thresholds per asset
+        # Format: {"ETH": {"min_net_yield": 0.30, "exit_yield": 0.06, ...}, ...}
+        self._symbol_overrides: Dict[str, Dict[str, float]] = {}
+        if config and "symbol_overrides" in config:
+            self._symbol_overrides = config["symbol_overrides"]
+            for sym, ovr in self._symbol_overrides.items():
+                logger.info(f"Symbol override for {sym}: {ovr}")
 
         # Track open arb positions: key = "SYMBOL_EXCHANGE"
         self.open_positions: Dict[str, ArbOpportunity] = {}
@@ -348,8 +362,22 @@ class FundingArbStrategy(BaseStrategy):
         logger.info(
             f"FundingArbStrategy initialized | paper={paper_mode} | "
             f"min_yield={self.MIN_NET_YIELD:.1%} | position_size=${self.POSITION_SIZE_USD} | "
+            f"max_hold_hours={getattr(self, 'MAX_HOLD_HOURS', 0)} | "
+            f"symbol_overrides={list(self._symbol_overrides.keys()) or 'none'} | "
             f"open_positions_restored={len(self.open_positions)}"
         )
+
+    # -----------------------------------------------------------------------
+    # Per-symbol thresholds
+    # -----------------------------------------------------------------------
+
+    def _get_threshold(self, symbol: str, key: str, default: float) -> float:
+        """
+        Look up a threshold for a symbol, falling back to the class-level default.
+        Supports per-symbol overrides from config (e.g. ETH: min_net_yield: 0.30).
+        """
+        overrides = self._symbol_overrides.get(symbol, {})
+        return overrides.get(key, default)
 
     # -----------------------------------------------------------------------
     # State persistence
@@ -578,20 +606,30 @@ class FundingArbStrategy(BaseStrategy):
 
             # ----- EXIT checks for existing positions -----
 
-            # Standard position exit: yield dropped or rate flipped negative
+            # Standard position exit: yield dropped, rate flipped, or max hold exceeded
             if pos_key in self.open_positions:
                 pos = self.open_positions[pos_key]
+                sym_exit = self._get_threshold(snap.symbol, "exit_yield", self.EXIT_YIELD)
+                age_h = (datetime.now(timezone.utc) - pos.timestamp).total_seconds() / 3600
                 should_exit = (
-                    snap.net_annual_yield < self.EXIT_YIELD
+                    snap.net_annual_yield < sym_exit
                     or snap.funding_rate < 0
                 )
+                # Max hold time check (if configured)
+                max_hold = getattr(self, "MAX_HOLD_HOURS", 0)
+                if max_hold > 0 and age_h > max_hold:
+                    should_exit = True
                 if should_exit:
-                    reason = "negative rate" if snap.funding_rate < 0 else "below exit threshold"
-                    age_h = (datetime.now(timezone.utc) - pos.timestamp).total_seconds() / 3600
+                    if max_hold > 0 and age_h > max_hold:
+                        reason = f"max hold {max_hold}h exceeded"
+                    elif snap.funding_rate < 0:
+                        reason = "negative rate"
+                    else:
+                        reason = "below exit threshold"
                     est_earned = pos.net_annual_yield * pos.recommended_notional_usd * (age_h / 8760)
                     logger.info(
                         f"EXIT signal: {pos_key} [STANDARD] | yield={snap.net_annual_yield:.1%} "
-                        f"(threshold={self.EXIT_YIELD:.1%}) | "
+                        f"(threshold={sym_exit:.1%}) | "
                         f"rate={reason} | age={age_h:.1f}h | est. earned=${est_earned:.2f}"
                     )
                     if self._paper_mode:
@@ -604,22 +642,30 @@ class FundingArbStrategy(BaseStrategy):
                     self._save_state()
                 continue  # Already positioned on this symbol/exchange — skip to next
 
-            # Reverse position exit: rate flipped positive or |yield| dropped
+            # Reverse position exit: rate flipped positive, |yield| dropped, or max hold
             if reverse_key in self.open_positions:
                 pos = self.open_positions[reverse_key]
+                sym_rev_exit = self._get_threshold(snap.symbol, "exit_reverse_yield", self.EXIT_REVERSE_YIELD)
                 abs_yield = abs(snap.net_annual_yield)
+                age_h = (datetime.now(timezone.utc) - pos.timestamp).total_seconds() / 3600
                 should_exit = (
                     snap.funding_rate > 0
-                    or abs_yield < self.EXIT_REVERSE_YIELD
+                    or abs_yield < sym_rev_exit
                 )
+                max_hold = getattr(self, "MAX_HOLD_HOURS", 0)
+                if max_hold > 0 and age_h > max_hold:
+                    should_exit = True
                 if should_exit:
-                    reason = "positive rate" if snap.funding_rate > 0 else "below reverse exit threshold"
-                    age_h = (datetime.now(timezone.utc) - pos.timestamp).total_seconds() / 3600
-                    # Reverse arb earns from |negative| rate, so use abs(entry yield)
+                    if max_hold > 0 and age_h > max_hold:
+                        reason = f"max hold {max_hold}h exceeded"
+                    elif snap.funding_rate > 0:
+                        reason = "positive rate"
+                    else:
+                        reason = "below reverse exit threshold"
                     est_earned = abs(pos.net_annual_yield) * pos.recommended_notional_usd * (age_h / 8760)
                     logger.info(
                         f"EXIT signal: {reverse_key} [REVERSE] | |yield|={abs_yield:.1%} "
-                        f"(threshold={self.EXIT_REVERSE_YIELD:.1%}) | "
+                        f"(threshold={sym_rev_exit:.1%}) | "
                         f"rate={reason} | age={age_h:.1f}h | est. earned=${est_earned:.2f}"
                     )
                     if self._paper_mode:
@@ -647,8 +693,12 @@ class FundingArbStrategy(BaseStrategy):
                 logger.info(f"Skip {snap.symbol}/{snap.exchange}: at max positions ({self.MAX_POSITIONS})")
                 continue
 
-            # --- Standard arb: positive rate, yield above threshold ---
-            if snap.funding_rate > 0 and snap.net_annual_yield >= self.MIN_NET_YIELD:
+            # --- Per-symbol thresholds for entry ---
+            sym_min = self._get_threshold(snap.symbol, "min_net_yield", self.MIN_NET_YIELD)
+            sym_rev_min = self._get_threshold(snap.symbol, "min_reverse_yield", self.MIN_REVERSE_YIELD)
+
+            # --- Standard arb: positive rate, yield above per-symbol threshold ---
+            if snap.funding_rate > 0 and snap.net_annual_yield >= sym_min:
                 opp = ArbOpportunity(
                     symbol=snap.symbol,
                     exchange=snap.exchange,
@@ -664,11 +714,11 @@ class FundingArbStrategy(BaseStrategy):
                 )
                 opportunities.append(opp)
 
-            # --- Reverse arb: negative rate, |yield| above reverse threshold ---
+            # --- Reverse arb: negative rate, |yield| above per-symbol reverse threshold ---
             elif (
                 self.REVERSE_ENABLED
                 and snap.funding_rate < 0
-                and abs(snap.net_annual_yield) >= self.MIN_REVERSE_YIELD
+                and abs(snap.net_annual_yield) >= sym_rev_min
             ):
                 opp = ArbOpportunity(
                     symbol=snap.symbol,
