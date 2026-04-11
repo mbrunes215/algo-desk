@@ -6,12 +6,20 @@
 #   chmod +x install_cron.sh
 #   ./install_cron.sh
 #
-# This installs five cron jobs:
-#   • 7:30 AM daily  — daily_scan.py morning (weather + all-market overview)
-#   • 5:00 PM daily  — daily_scan.py evening (next-day contracts)
-#   • 6:00 AM daily  — econ_scan.py morning (macro/econ edge signals, pre-market)
-#   • 12:00 PM daily — econ_scan.py midday (refresh before US afternoon data)
-#   • 8:00 AM daily  — daily_report.py (funding arb summary email)
+# This installs six cron jobs (all times UTC):
+#   • 7:30 AM  daily — daily_scan.py morning
+#   • 5:00 PM  daily — daily_scan.py evening
+#   • 6:00 AM  daily — econ_scan.py morning (macro/econ edge signals)
+#   • 11:45 AM daily — econ_scan.py --pre-release (7:45 AM ET — catches pre-release Kalshi quotes)
+#   • 5:00 PM  daily — econ_scan.py post-market refresh
+#   • 8:00 AM  daily — daily_report.py (funding arb summary email)
+#
+# WHY THREE ECON SCANS:
+#   US econ releases (CPI, NFP, PCE, GDP) drop at 8:30 AM ET = 12:30 UTC.
+#   SIG (Kalshi market maker) withdraws quotes at/around that time.
+#   The 11:45 UTC scan catches the pre-release quotes window (7:45 AM ET).
+#   The --pre-release flag exits cleanly on non-release days (no wasted API calls).
+#   The old 12:00 PM UTC scan was landing AFTER the release — replaced by 11:45.
 #
 # NOTE: The funding arb monitor (start_funding_arb.sh) runs as a persistent
 # background process, not a cron job. Start it manually after deploying:
@@ -53,7 +61,8 @@ echo "✅ .env has KALSHI_API_KEY"
 MORNING_CRON="30 7 * * * bash -c 'cd \"$REPO_DIR\" && $PYTHON daily_scan.py >> \"$CRON_LOG\" 2>&1'"
 EVENING_CRON="0 17 * * * bash -c 'cd \"$REPO_DIR\" && $PYTHON daily_scan.py >> \"$CRON_LOG\" 2>&1'"
 ECON_MORNING_CRON="0 6 * * * bash -c 'cd \"$REPO_DIR\" && $PYTHON econ_scan.py >> \"$ECON_LOG\" 2>&1'"
-ECON_MIDDAY_CRON="0 12 * * * bash -c 'cd \"$REPO_DIR\" && $PYTHON econ_scan.py >> \"$ECON_LOG\" 2>&1'"
+ECON_PRERELEASE_CRON="45 11 * * * bash -c 'cd \"$REPO_DIR\" && $PYTHON econ_scan.py --pre-release >> \"$ECON_LOG\" 2>&1'"
+ECON_EVENING_CRON="0 17 * * * bash -c 'cd \"$REPO_DIR\" && $PYTHON econ_scan.py >> \"$ECON_LOG\" 2>&1'"
 REPORT_CRON="0 8 * * * bash -c 'cd \"$REPO_DIR\" && $PYTHON daily_report.py >> \"$REPORT_LOG\" 2>&1'"
 
 # Read existing crontab (ignore error if empty)
@@ -74,21 +83,23 @@ if echo "$EXISTING" | grep -qE "daily_scan.py|econ_scan.py|daily_report.py"; the
     EXISTING=$(echo "$EXISTING" | grep -vE "daily_scan.py|econ_scan.py|daily_report.py")
 fi
 
-# Install all five cron entries
-NEW_CRONTAB=$(printf "%s\n%s\n%s\n%s\n%s\n%s\n" \
+# Install all six cron entries
+NEW_CRONTAB=$(printf "%s\n%s\n%s\n%s\n%s\n%s\n%s\n" \
     "$EXISTING" \
     "$MORNING_CRON" \
     "$EVENING_CRON" \
     "$ECON_MORNING_CRON" \
-    "$ECON_MIDDAY_CRON" \
+    "$ECON_PRERELEASE_CRON" \
+    "$ECON_EVENING_CRON" \
     "$REPORT_CRON")
 echo "$NEW_CRONTAB" | crontab -
 
 echo ""
 echo "✅ Cron jobs installed:"
-echo "   daily_scan.py   — 7:30 AM + 5:00 PM daily  → $CRON_LOG"
-echo "   econ_scan.py    — 6:00 AM + 12:00 PM daily → $ECON_LOG"
-echo "   daily_report.py — 8:00 AM daily             → $REPORT_LOG (emails you)"
+echo "   daily_scan.py   — 7:30 AM + 5:00 PM UTC daily      → $CRON_LOG"
+echo "   econ_scan.py    — 6:00 AM + 11:45 AM + 5:00 PM UTC → $ECON_LOG"
+echo "                     (11:45 = 7:45 AM ET pre-release, --pre-release flag)"
+echo "   daily_report.py — 8:00 AM UTC daily                 → $REPORT_LOG (emails you)"
 echo ""
 echo "Verify with:  crontab -l | grep -E 'daily_scan|econ_scan|daily_report'"
 echo ""

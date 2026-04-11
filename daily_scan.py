@@ -188,14 +188,22 @@ def fetch_top_markets(limit=200):
 
     result = list(seen.values())
 
-    # Sort by volume descending — priced contracts first
+    # Sort by (volume desc, open_interest desc) — priced contracts first.
+    # Using open_interest as tiebreaker because volume can be 0 early in the day
+    # (Kalshi resets volume at session open) while OI persists across resets.
+    # Zero-volume priced markets are sorted below non-zero but above unpriced.
     priced   = [m for m in result if m["bid"] is not None and m["ask"] is not None]
     unpriced = [m for m in result if m["bid"] is None or m["ask"] is None]
 
-    priced.sort(key=lambda x: x["volume"], reverse=True)
-    unpriced.sort(key=lambda x: x["volume"], reverse=True)
+    priced.sort(key=lambda x: (x["volume"], x["open_interest"]), reverse=True)
+    unpriced.sort(key=lambda x: (x["volume"], x["open_interest"]), reverse=True)
 
-    return priced + unpriced
+    # Filter out zero-volume AND zero-OI priced markets from the top — they're
+    # MM-quoted shells with no real participation. Keep them at the end.
+    real_priced   = [m for m in priced if m["volume"] > 0 or m["open_interest"] > 0]
+    ghost_priced  = [m for m in priced if m["volume"] == 0 and m["open_interest"] == 0]
+
+    return real_priced + ghost_priced + unpriced
 
 
 def find_closing_soon(markets, hours=48):

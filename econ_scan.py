@@ -17,8 +17,13 @@ Usage:
     cd ~/Documents/Claude/Projects/Algo Trading Desk/algo-desk
     python3 econ_scan.py
 
-Cron (runs at 6:00 AM + 12:00 PM daily):
-    0 6,12 * * * cd ~/Documents/Claude/Projects/Algo Trading Desk/algo-desk && python3 econ_scan.py >> logs/econ_cron.log 2>&1
+Cron (three daily runs — see install_cron.sh):
+    0 6    * * *  econ_scan.py                  # 6:00 UTC pre-market
+    45 11  * * *  econ_scan.py --pre-release     # 11:45 UTC = 7:45 AM ET (catches pre-release quotes)
+    0 17   * * *  econ_scan.py                  # 17:00 UTC post-market
+
+    --pre-release flag: exits cleanly if no release day detected within 1 day.
+    Prevents the 11:45 scan from wasting API calls on non-release days.
 
 Key markets tracked (Kalshi series tickers):
     KXFED           -- Fed Funds rate decisions (very high volume around FOMC)
@@ -495,15 +500,99 @@ def build_econ_report(scan_time, markets):
     return "\n".join(lines)
 
 
+# ── Release Day Timing Guard ───────────────────────────────────────────────────
+
+def get_todays_release(scan_time):
+    """
+    Return the release calendar entry for today (UTC date), or None.
+    Used to detect release days and apply pre/post-release logic.
+    """
+    from datetime import date as _date
+    today = scan_time.date()
+    for release_date_str, event_name, series, note in RELEASE_CALENDAR:
+        if _date.fromisoformat(release_date_str) == today:
+            return release_date_str, event_name, series, note
+    return None
+
+
+def check_release_timing(scan_time, pre_release_mode=False):
+    """
+    On US economic release days, data drops at 8:30 AM ET = 12:30 UTC.
+    SIG (the market maker) typically pulls quotes at or just before the print.
+    Running a scan after 12:30 UTC on a release day will find 0 tradeable contracts.
+
+    Logic:
+      - If pre_release_mode=True and today is NOT a release day → exit (no-op).
+      - If today IS a release day and UTC time is >= 12:30 → warn and exit (too late).
+      - Otherwise → proceed normally.
+
+    Returns True if scan should proceed, False if it should exit.
+    """
+    RELEASE_CUTOFF_UTC_HOUR   = 12  # 12:30 UTC = 8:30 AM ET
+    RELEASE_CUTOFF_UTC_MINUTE = 30
+
+    todays_release = get_todays_release(scan_time)
+
+    if pre_release_mode:
+        if todays_release is None:
+            # Check if any release is tomorrow (within ~20 hours)
+            from datetime import date as _date, timedelta
+            tomorrow = scan_time.date() + timedelta(days=1)
+            tomorrow_release = None
+            for release_date_str, event_name, series, note in RELEASE_CALENDAR:
+                if _date.fromisoformat(release_date_str) == tomorrow:
+                    tomorrow_release = (release_date_str, event_name, series, note)
+                    break
+            if tomorrow_release:
+                print(f"[PRE-RELEASE] Tomorrow is a release day: {tomorrow_release[1]} — proceeding.")
+                return True
+            print("[PRE-RELEASE] No release today or tomorrow — skipping scan (use without --pre-release for full scan).")
+            return False
+
+    if todays_release is not None:
+        _, event_name, _, _ = todays_release
+        current_minutes = scan_time.hour * 60 + scan_time.minute
+        cutoff_minutes  = RELEASE_CUTOFF_UTC_HOUR * 60 + RELEASE_CUTOFF_UTC_MINUTE
+        if current_minutes >= cutoff_minutes:
+            print(
+                f"[TIMING] Today is a release day ({event_name}) and it's "
+                f"{scan_time.strftime('%H:%M')} UTC — past the 12:30 UTC release window. "
+                f"SIG quotes are likely withdrawn. Exiting scan. "
+                f"(Next useful scan: 6:00 AM UTC tomorrow, or use the 11:45 UTC pre-release cron next time.)"
+            )
+            return False
+        else:
+            mins_to_release = cutoff_minutes - current_minutes
+            print(
+                f"[TIMING] Release day detected: {event_name}. "
+                f"{mins_to_release} minutes until 12:30 UTC release window. "
+                f"Scanning now for pre-release quotes."
+            )
+
+    return True
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Kalshi Econ Event Scanner")
+    parser.add_argument(
+        "--pre-release", action="store_true",
+        help="Only run on release days or day-before — exits cleanly on non-release days."
+    )
+    args = parser.parse_args()
+
     if not API_KEY:
         print("ERROR: KALSHI_API_KEY not set in .env", file=sys.stderr)
         sys.exit(1)
 
     scan_time = datetime.now(timezone.utc)
     print(f"[{scan_time.isoformat()}] Starting Kalshi econ event scan...")
+
+    # Release day timing guard — exits early if post-release or non-release (in pre-release mode)
+    if not check_release_timing(scan_time, pre_release_mode=args.pre_release):
+        sys.exit(0)
     if not FRED_KEY:
         print("  [INFO] No FRED_API_KEY set — prior values will be skipped. "
               "Get a free key at fred.stlouisfed.org/api/request_api_key "
