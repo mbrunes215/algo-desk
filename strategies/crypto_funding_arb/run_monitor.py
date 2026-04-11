@@ -44,19 +44,30 @@ def run_once(strategy: FundingArbStrategy) -> None:
 
     opportunities = strategy.find_opportunities(snapshots)
     if opportunities:
-        logger.info(f"{len(opportunities)} opportunity(s) found above {strategy.MIN_NET_YIELD:.0%} threshold")
-        best = max(opportunities, key=lambda o: o.net_annual_yield)
-        for opp in sorted(opportunities, key=lambda o: o.net_annual_yield, reverse=True):
+        # Separate standard and reverse for logging
+        std_opps = [o for o in opportunities if o.direction == "standard"]
+        rev_opps = [o for o in opportunities if o.direction == "reverse"]
+        parts = []
+        if std_opps:
+            parts.append(f"{len(std_opps)} standard")
+        if rev_opps:
+            parts.append(f"{len(rev_opps)} reverse")
+        logger.info(f"{len(opportunities)} opportunity(s) found: {', '.join(parts)}")
+
+        best = max(opportunities, key=lambda o: abs(o.net_annual_yield))
+        for opp in sorted(opportunities, key=lambda o: abs(o.net_annual_yield), reverse=True):
+            dir_tag = "[REV]" if opp.direction == "reverse" else "[STD]"
             logger.info(
-                f"  → {opp.symbol} on {opp.exchange}: "
-                f"{opp.net_annual_yield:.1%} net annualized | "
+                f"  → {dir_tag} {opp.symbol} on {opp.exchange}: "
+                f"|yield|={abs(opp.net_annual_yield):.1%} net annualized | "
                 f"${opp.recommended_notional_usd:,.0f}/leg"
             )
         # Build signal from already-fetched data — no second API call
+        side = "SELL" if best.direction == "reverse" else "BUY"
         signal = StrategyResult(
             signal=True,
-            confidence=min(best.net_annual_yield / 0.30, 1.0),
-            side="BUY",
+            confidence=min(abs(best.net_annual_yield) / 0.30, 1.0),
+            side=side,
             size=1,
             metadata={
                 "symbol": best.symbol,
@@ -68,12 +79,13 @@ def run_once(strategy: FundingArbStrategy) -> None:
                 "perp_price": best.perp_price,
                 "basis_pct": best.basis_pct,
                 "notional_usd": best.recommended_notional_usd,
+                "direction": best.direction,
                 "all_opportunities": len(opportunities),
             },
         )
         strategy.execute_trade(signal)
     else:
-        logger.info(f"No opportunities above {strategy.MIN_NET_YIELD:.0%} net threshold")
+        logger.info("No opportunities above threshold (standard or reverse)")
 
     strategy.print_open_positions()
 

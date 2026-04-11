@@ -26,16 +26,23 @@ kalshi_econ:
       - GDP
 
 # Crypto Funding Rate Arbitrage Strategy
-# Delta-neutral: spot long + perp short to collect 8-hourly funding payments
+# Standard: spot long + perp short to collect positive 8-hourly funding
+# Reverse:  spot short + perp long to collect |negative| funding
 # No directional risk when properly hedged — edge is structural, not predictive
 crypto_funding_arb:
   enabled: true
   params:
+    # Standard arb (positive funding rates)
     min_net_yield: 0.08       # 8% annualized net of fees to open a position
     exit_yield: 0.04          # 4% — close if yield drops here
+    # Reverse arb (negative funding rates — risk-off environments)
+    reverse_enabled: true     # Enable reverse arb (short spot / long perp)
+    min_reverse_yield: 0.08   # 8% |annualized| net of fees to open reverse
+    exit_reverse_yield: 0.04  # 4% — close reverse when |yield| drops here
+    # Shared parameters
     max_basis_pct: 0.005      # 0.5% max spot/perp divergence at entry
     position_size_usd: 500    # USD notional per leg (both legs = $1000 total deployed)
-    max_positions: 6          # Max concurrent arb positions (3 symbols × 2 exchanges)
+    max_positions: 6          # Max concurrent arb positions (standard + reverse combined)
     symbols:
       - BTC
       - ETH

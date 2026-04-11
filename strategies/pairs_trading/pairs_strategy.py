@@ -29,6 +29,11 @@ SIGNAL LOGIC:
   - EXIT:  |Z| < EXIT_THRESHOLD (default 0.5) or Z flips sign
   - STOP:  |Z| > STOP_THRESHOLD (default 3.5) — spread widening against us
 
+WINDOW NOTE:
+  Window is 2016 observations × 5min = 7 days. This provides a more
+  representative std than a 24h window, which shrinks during calm periods
+  and produces bands too tight to generate meaningful signals.
+
 REALISTIC RETURNS (from research + live implementations):
   - 12–26% annualized
   - Sharpe ratio 1.5–2.5
@@ -158,7 +163,7 @@ class PairsTradingStrategy(BaseStrategy):
     ENTRY_Z        = 2.0    # Open position when |Z| exceeds this
     EXIT_Z         = 0.5    # Close position when |Z| drops below this
     STOP_Z         = 3.5    # Stop-loss: close if spread widens to this
-    WINDOW         = 288    # Rolling window in observations (288 × 5min = 24 hours)
+    WINDOW         = 2016   # Rolling window in observations (2016 × 5min = 7 days)
     POSITION_USD   = 500    # USD notional per leg
     MAX_POSITIONS  = 2      # Max concurrent pairs positions (normally just 1)
     MAX_HOLD_HOURS = 72     # Force close after this many hours regardless
@@ -295,8 +300,8 @@ class PairsTradingStrategy(BaseStrategy):
         # Add to rolling window
         self._spread_window.append(log_spread)
         self._price_history.append(snap)
-        # Keep history bounded
-        if len(self._price_history) > self.WINDOW * 2:
+        # Keep history bounded to WINDOW observations (deque handles _spread_window automatically)
+        if len(self._price_history) > self.WINDOW:
             self._price_history = self._price_history[-self.WINDOW:]
         # Persist to disk so restarts don't lose warmup progress
         self._save_state()

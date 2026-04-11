@@ -76,10 +76,10 @@ def parse_log(log_path: Path, since: datetime) -> dict:
     # Regex patterns
     re_timestamp = re.compile(r"^(\d{2}:\d{2}:\d{2})")
     re_rate_line = re.compile(
-        r"(Kraken|Coinbase)\s+(\w+):\s+rate=([0-9.\-]+)\s+\(([0-9.\-]+)%\s+ann\).*net=([0-9.\-]+)%.*spot=\$([0-9,]+)"
+        r"(Kraken|Coinbase)\s+(\w+):\s+rate=([0-9.\-]+)\s+\(([0-9.\-]+)%\s+ann\).*net=([0-9.\-]+)%.*basis=([0-9.\-]+)%.*spot=\$([0-9,]+)"
     )
     re_paper_open = re.compile(
-        r"\[PAPER\] OPEN ARB:\s+(\w+)\s+on\s+(\w+).*net yield=([0-9.]+)%\s+ann.*notional=\$([0-9,]+)"
+        r"\[PAPER\] OPEN ARB:\s+(\w+)\s+on\s+(\w+).*notional=\$([0-9,]+).*net yield=([0-9.]+)%\s+ann"
     )
     re_exit = re.compile(r"EXIT signal:\s+(\w+)_(\w+)\s+\|.*yield=([0-9.]+)%")
     re_scan_start = re.compile(r"Scanning funding rates")
@@ -110,19 +110,21 @@ def parse_log(log_path: Path, since: datetime) -> dict:
 
         rate_match = re_rate_line.search(line)
         if rate_match:
-            exchange, symbol, rate, ann, net, spot = rate_match.groups()
+            exchange, symbol, rate, ann, net, basis, spot = rate_match.groups()
             summary["snapshots"].append({
                 "exchange": exchange,
                 "symbol": symbol,
                 "rate": float(rate),
                 "annualized": float(ann),
                 "net": float(net),
+                "basis": float(basis),
                 "spot": spot.replace(",", ""),
             })
 
         paper_match = re_paper_open.search(line)
         if paper_match:
-            symbol, exchange, net_yield, notional = paper_match.groups()
+            # Groups: symbol, exchange, notional, net_yield (order matches log format)
+            symbol, exchange, notional, net_yield = paper_match.groups()
             summary["paper_opens"].append({
                 "symbol": symbol,
                 "exchange": exchange,
@@ -330,17 +332,21 @@ def format_report(summary: dict, pairs: dict, since: datetime) -> str:
 
         sorted_snaps = sorted(best.values(), key=lambda x: x["net"], reverse=True)
         lines.append("BEST RATES SEEN TODAY (peak per asset)")
-        lines.append(f"  {'Asset':<8} {'Exchange':<12} {'Rate/8h':>9} {'Ann':>8} {'Net':>8} {'Spot':>12}")
-        lines.append("  " + "-" * 53)
+        lines.append(f"  {'Asset':<8} {'Exchange':<12} {'Rate/8h':>9} {'Ann':>8} {'Net':>8} {'Basis':>7} {'Spot':>12}")
+        lines.append("  " + "-" * 61)
         for s in sorted_snaps:
+            basis = s.get("basis", 0.0)
+            basis_flag = "  ← basis too wide" if abs(basis) >= 0.5 else ""
             marker = "  ← above threshold" if s["net"] >= 8.0 else ""
+            annotation = basis_flag if basis_flag else marker
             lines.append(
                 f"  {s['symbol']:<8} {s['exchange']:<12} "
                 f"{s['rate']:>8.4f}%  "
                 f"{s['annualized']:>6.1f}%  "
                 f"{s['net']:>6.1f}%  "
+                f"{basis:>6.3f}%  "
                 f"${float(s['spot']):>9,.0f}"
-                f"{marker}"
+                f"{annotation}"
             )
         lines.append("")
     else:
