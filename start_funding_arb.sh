@@ -11,9 +11,10 @@
 #   ./start_funding_arb.sh
 #
 # Other commands:
-#   ./start_funding_arb.sh stop    — stop the running monitor
-#   ./start_funding_arb.sh status  — check if it's running
-#   ./start_funding_arb.sh logs    — tail the live log
+#   ./start_funding_arb.sh stop     — stop the running monitor
+#   ./start_funding_arb.sh restart  — stop then immediately start fresh
+#   ./start_funding_arb.sh status   — check if it's running
+#   ./start_funding_arb.sh logs     — tail the live log
 
 set -e
 
@@ -26,7 +27,7 @@ PID_FILE="$REPO_DIR/logs/funding_arb.pid"
 mkdir -p "$REPO_DIR/logs"
 
 # ─── STOP ───────────────────────────────────────────────────
-if [ "${1:-}" = "stop" ]; then
+_do_stop() {
     if [ -f "$PID_FILE" ]; then
         PID=$(cat "$PID_FILE")
         if kill -0 "$PID" 2>/dev/null; then
@@ -41,7 +42,18 @@ if [ "${1:-}" = "stop" ]; then
         echo "⚠️  No PID file found — monitor may not be running."
         echo "   Check manually: ps aux | grep run_monitor"
     fi
+}
+
+if [ "${1:-}" = "stop" ]; then
+    _do_stop
     exit 0
+fi
+
+# ─── RESTART ────────────────────────────────────────────────
+if [ "${1:-}" = "restart" ]; then
+    _do_stop
+    sleep 1
+    # Fall through to START below
 fi
 
 # ─── STATUS ─────────────────────────────────────────────────
@@ -74,12 +86,12 @@ fi
 
 # ─── START ──────────────────────────────────────────────────
 
-# Check if already running
+# Check if already running (restart falls through here with PID already killed)
 if [ -f "$PID_FILE" ]; then
     PID=$(cat "$PID_FILE")
     if kill -0 "$PID" 2>/dev/null; then
         echo "⚠️  Monitor already running (PID $PID)"
-        echo "   Use './start_funding_arb.sh status' to check or './start_funding_arb.sh stop' to stop."
+        echo "   Use './start_funding_arb.sh restart' to stop and relaunch."
         exit 0
     else
         echo "Stale PID file found — cleaning up."
