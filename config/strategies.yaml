@@ -75,20 +75,24 @@ pairs_trading:
     max_hold_hours: 72      # Force close after 72 hours regardless
 
 # IBKR Opening Range Breakout (ORB) Strategy
-# Trades /MNQ breakout from the first 15-minute range after the 9:30 AM ET open
+# Trades /MNQ breakout from the first 30-minute range after the 9:30 AM ET open
 # Entry: 1-min close above range high (long) or below range low (short)
 # Stop: opposite side of range | Target: range width × R:R multiple
 # One trade per day max, hard close at 15:55 ET
+#
+# Params updated 2026-04-11 from 61-day sweep (best of 36 combos):
+#   30min/3.0R/300 → PF=1.28, 46% WR, 24 trades, +$885
+#   Previous: 15min/2.0R/100 → mostly unprofitable (too tight in high-vol regime)
 ibkr_orb:
   enabled: true
   params:
     symbol: MNQ                 # Micro E-mini Nasdaq 100
-    range_minutes: 15           # Opening range window (9:30–9:45 ET)
-    rr_multiple: 2.0            # Take profit = range width × this
+    range_minutes: 30           # Opening range window (9:30–10:00 ET)
+    rr_multiple: 3.0            # Take profit = range width × this
     contracts: 1                # Position size (1 MNQ ≈ $2K margin)
     max_daily_loss_usd: 200     # Stop trading for the day at this loss
     min_range_points: 10        # Skip if opening range < 10 pts ($20 risk)
-    max_range_points: 100       # Skip if opening range > 100 pts ($200 risk)
+    max_range_points: 300       # Skip if opening range > 300 pts ($600 risk)
     close_time_et: "15:55"      # Hard close time (5 min before futures RTH close)
 
 # IBKR Mean Reversion Strategy
