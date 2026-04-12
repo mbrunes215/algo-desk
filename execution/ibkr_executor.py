@@ -289,17 +289,54 @@ class IBKRExecutor:
             spec = FUTURES_SPECS.get(symbol.upper(), {})
             exch = spec.get("exchange", exchange)
             cur = spec.get("currency", currency)
+            # Use provided month, or auto-calculate the front month
+            month = contract_month or self._get_front_month()
             contract = Future(
                 symbol=symbol.upper(),
+                lastTradeDateOrContractMonth=month,
                 exchange=exch,
                 currency=cur,
             )
-            if contract_month:
-                contract.lastTradeDateOrContractMonth = contract_month
         else:
             contract = Stock(symbol, exchange, currency)
 
         return contract
+
+    @staticmethod
+    def _get_front_month() -> str:
+        """
+        Calculate the current CME front-month contract as YYYYMM.
+
+        CME equity index futures (MNQ, NQ, ES, MES) expire on the 3rd Friday
+        of March, June, September, and December. We roll to the next contract
+        ~1 week before expiry to avoid thin liquidity.
+
+        Returns:
+            e.g. '202606' for June 2026 front month
+        """
+        from datetime import date, timedelta
+
+        today = date.today()
+        # Quarterly expiry months
+        expiry_months = [3, 6, 9, 12]
+
+        for year in [today.year, today.year + 1]:
+            for month in expiry_months:
+                # Find 3rd Friday of this month
+                first_day = date(year, month, 1)
+                # weekday() 4 = Friday
+                days_until_friday = (4 - first_day.weekday()) % 7
+                first_friday = first_day + timedelta(days=days_until_friday)
+                third_friday = first_friday + timedelta(weeks=2)
+
+                # Roll 7 days before expiry
+                roll_date = third_friday - timedelta(days=7)
+
+                if today < roll_date:
+                    return f"{year}{month:02d}"
+
+        # Fallback — shouldn't reach here
+        return f"{today.year}{expiry_months[0]:02d}"
 
     async def qualify_contract(self, contract: Contract) -> Contract:
         """
