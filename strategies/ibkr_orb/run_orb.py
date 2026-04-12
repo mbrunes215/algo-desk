@@ -38,7 +38,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from strategies.ibkr_orb import ORBStrategy
 from strategies.ibkr_orb.orb_strategy import (
-    is_market_hours, market_open_utc, to_et, utc_now, today_str, MNQ_MULTIPLIER,
+    DailyState, is_market_hours, market_open_utc, to_et, utc_now, today_str,
+    MNQ_MULTIPLIER,
 )
 from execution.ibkr_executor import IBKRExecutor, BarSnapshot
 
@@ -318,15 +319,16 @@ async def run_backtest(args):
                 "close_time_et": args.close_time,
             },
         )
-        # Force date
-        strategy.state = strategy.state.__class__(date=date_str)
+        # Force fresh state for this day — skip state file loading
+        strategy._trade_history = []
+        strategy.state = DailyState(date=date_str)
 
         for bar in day_bars:
             action = strategy.process_bar(
                 bar.timestamp, bar.open, bar.high, bar.low, bar.close, bar.volume
             )
 
-        # Collect results
+        # Collect results — only trades from THIS day
         day_trades = strategy.get_trade_history()
         range_info = strategy.state.opening_range
 
@@ -389,6 +391,170 @@ async def run_backtest(args):
 
 
 # ---------------------------------------------------------------------------
+# Parameter sweep
+# ---------------------------------------------------------------------------
+
+async def run_sweep(args):
+    """
+    Run a parameter sweep over range_minutes, rr_multiple, and max_range.
+
+    Fetches bars once, then replays with every parameter combo to find
+    the best-performing configuration. Reports a ranked summary.
+    """
+    executor = IBKRExecutor(
+        host=args.host,
+        port=args.port,
+        client_id=args.client_id,
+        paper_trading=True,
+    )
+
+    logger.info(f"Connecting to TWS for historical data...")
+    connected = await executor.connect()
+    if not connected:
+        logger.error("Failed to connect to TWS.")
+        return
+
+    try:
+        contract = executor.make_contract(args.symbol, sec_type="FUT")
+        contract = await executor.qualify_contract(contract)
+    except Exception as e:
+        logger.error(f"Failed to qualify contract: {e}")
+        await executor.disconnect()
+        return
+
+    duration = f"{args.days} D"
+    logger.info(f"Requesting {duration} of 1-min bars...")
+
+    try:
+        bars = await executor.get_historical_bars(
+            contract, duration=duration, bar_size="1 min",
+            what_to_show="TRADES", use_rth=True,
+        )
+    except Exception as e:
+        logger.error(f"Failed to get bars: {e}")
+        await executor.disconnect()
+        return
+
+    await executor.disconnect()
+
+    if not bars:
+        logger.error("No bars returned")
+        return
+
+    # Group by date
+    bars_by_date: dict = {}
+    for bar in bars:
+        ds = to_et(bar.timestamp).strftime("%Y-%m-%d")
+        if ds not in bars_by_date:
+            bars_by_date[ds] = []
+        bars_by_date[ds].append(bar)
+
+    logger.info(f"Got {len(bars)} bars across {len(bars_by_date)} trading days")
+
+    # Parameter grid
+    range_minutes_opts = [5, 10, 15, 30]
+    rr_opts = [1.5, 2.0, 3.0]
+    max_range_opts = [150, 200, 300]
+
+    results = []
+
+    for rm in range_minutes_opts:
+        for rr in rr_opts:
+            for mr in max_range_opts:
+                all_trades = []
+
+                for date_str in sorted(bars_by_date.keys()):
+                    day_bars = bars_by_date[date_str]
+
+                    strat = ORBStrategy(
+                        paper_mode=True,
+                        config={
+                            "symbol": args.symbol,
+                            "range_minutes": rm,
+                            "rr_multiple": rr,
+                            "contracts": 1,
+                            "max_daily_loss_usd": 500,
+                            "min_range_points": 10,
+                            "max_range_points": mr,
+                            "close_time_et": "15:55",
+                        },
+                    )
+                    strat._trade_history = []
+                    strat.state = DailyState(date=date_str)
+
+                    for bar in day_bars:
+                        strat.process_bar(
+                            bar.timestamp, bar.open, bar.high, bar.low,
+                            bar.close, bar.volume,
+                        )
+
+                    all_trades.extend(strat.get_trade_history())
+
+                if not all_trades:
+                    continue
+
+                pnls = [t["pnl_usd"] for t in all_trades]
+                winners = [p for p in pnls if p > 0]
+                losers = [p for p in pnls if p < 0]
+                gp = sum(winners) if winners else 0
+                gl = abs(sum(losers)) if losers else 1
+
+                results.append({
+                    "range_min": rm,
+                    "rr": rr,
+                    "max_range": mr,
+                    "trades": len(all_trades),
+                    "win_rate": len(winners) / len(all_trades) if all_trades else 0,
+                    "total_pnl": sum(pnls),
+                    "avg_pnl": sum(pnls) / len(pnls) if pnls else 0,
+                    "profit_factor": gp / gl if gl > 0 else float("inf"),
+                    "max_win": max(pnls) if pnls else 0,
+                    "max_loss": min(pnls) if pnls else 0,
+                })
+
+    # Sort by profit factor, then total P&L
+    results.sort(key=lambda r: (r["profit_factor"], r["total_pnl"]), reverse=True)
+
+    print()
+    print("=" * 90)
+    print(f"PARAMETER SWEEP — {args.symbol} ORB — {len(bars_by_date)} trading days")
+    print("=" * 90)
+    print(f"  {'Range':>5s}  {'R:R':>4s}  {'MaxRng':>6s}  {'Trades':>6s}  "
+          f"{'WinRate':>7s}  {'PF':>5s}  {'TotalPnL':>10s}  {'AvgPnL':>8s}  "
+          f"{'MaxWin':>8s}  {'MaxLoss':>8s}")
+    print("-" * 90)
+
+    for r in results:
+        flag = " ***" if r["profit_factor"] > 1.0 and r["trades"] >= 5 else ""
+        print(
+            f"  {r['range_min']:>4d}m  {r['rr']:>4.1f}  {r['max_range']:>5.0f}  "
+            f"{r['trades']:>6d}  {r['win_rate']:>6.0%}  {r['profit_factor']:>5.2f}  "
+            f"${r['total_pnl']:>+9.2f}  ${r['avg_pnl']:>+7.2f}  "
+            f"${r['max_win']:>+7.2f}  ${r['max_loss']:>+7.2f}{flag}"
+        )
+
+    profitable = [r for r in results if r["profit_factor"] > 1.0 and r["trades"] >= 5]
+    if profitable:
+        print()
+        best = profitable[0]
+        print(
+            f"  BEST: {best['range_min']}min range, {best['rr']}R, "
+            f"max_range={best['max_range']} → "
+            f"PF={best['profit_factor']:.2f}, "
+            f"win_rate={best['win_rate']:.0%}, "
+            f"{best['trades']} trades, "
+            f"${best['total_pnl']:+.2f} total"
+        )
+    else:
+        print()
+        print("  No profitable parameter combination found in this window.")
+        print("  Consider: wider lookback, different instrument, or the market regime")
+        print("  may not suit ORB right now (high vol, no follow-through).")
+
+    print()
+
+
+# ---------------------------------------------------------------------------
 # Status
 # ---------------------------------------------------------------------------
 
@@ -430,6 +596,7 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--live", action="store_true", help="Run live against TWS")
     mode.add_argument("--backtest", action="store_true", help="Backtest with historical data")
+    mode.add_argument("--sweep", action="store_true", help="Parameter sweep (tests all combos)")
     mode.add_argument("--status", action="store_true", help="Print current state")
 
     # Connection
@@ -464,6 +631,8 @@ def main():
         asyncio.run(run_live(args))
     elif args.backtest:
         asyncio.run(run_backtest(args))
+    elif args.sweep:
+        asyncio.run(run_sweep(args))
     elif args.status:
         run_status(args)
 
