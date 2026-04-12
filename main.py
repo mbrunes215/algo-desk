@@ -344,6 +344,34 @@ class TradingDeskApplication:
                     f"min_yield={params.get('min_net_yield', 0.08):.0%} | "
                     f"position_size=${params.get('position_size_usd', 500):,}/leg"
                 )
+            elif strategy_name == "ibkr_orb":
+                params = strategy_config.get("params", {})
+                from strategies.ibkr_orb import ORBStrategy
+                self.orb_strategy = ORBStrategy(
+                    paper_mode=self.paper_trading,
+                    config={
+                        "symbol": params.get("symbol", "MNQ"),
+                        "range_minutes": params.get("range_minutes", 15),
+                        "rr_multiple": params.get("rr_multiple", 2.0),
+                        "contracts": params.get("contracts", 1),
+                        "max_daily_loss_usd": params.get("max_daily_loss_usd", 200),
+                        "min_range_points": params.get("min_range_points", 10),
+                        "max_range_points": params.get("max_range_points", 100),
+                        "close_time_et": params.get("close_time_et", "15:55"),
+                    },
+                )
+                self.strategies[strategy_name] = {
+                    "name": strategy_name,
+                    "config": strategy_config,
+                    "status": "INITIALIZED",
+                    "instance": self.orb_strategy,
+                }
+                logger.info(
+                    f"ORBStrategy initialized | "
+                    f"symbol={params.get('symbol', 'MNQ')} | "
+                    f"range={params.get('range_minutes', 15)}min | "
+                    f"R:R=1:{params.get('rr_multiple', 2.0)}"
+                )
             else:
                 self.strategies[strategy_name] = {
                     "name": strategy_name,
