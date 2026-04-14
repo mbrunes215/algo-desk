@@ -12,7 +12,7 @@
 #   • 6:00 AM  daily — econ_scan.py morning (macro/econ edge signals)
 #   • 11:45 AM daily — econ_scan.py --pre-release (7:45 AM ET — catches pre-release Kalshi quotes)
 #   • 5:00 PM  daily — econ_scan.py post-market refresh
-#   • 8:00 AM  daily — daily_report.py (funding arb summary email)
+#   • 7:00 AM  daily — daily_report.py (funding arb summary email, 12:00 UTC)
 #
 # WHY THREE ECON SCANS:
 #   US econ releases (CPI, NFP, PCE, GDP) drop at 8:30 AM ET = 12:30 UTC.
@@ -63,7 +63,7 @@ EVENING_CRON="0 17 * * * bash -c 'cd \"$REPO_DIR\" && $PYTHON daily_scan.py >> \
 ECON_MORNING_CRON="0 6 * * * bash -c 'cd \"$REPO_DIR\" && $PYTHON econ_scan.py >> \"$ECON_LOG\" 2>&1'"
 ECON_PRERELEASE_CRON="45 11 * * * bash -c 'cd \"$REPO_DIR\" && $PYTHON econ_scan.py --pre-release >> \"$ECON_LOG\" 2>&1'"
 ECON_EVENING_CRON="0 17 * * * bash -c 'cd \"$REPO_DIR\" && $PYTHON econ_scan.py >> \"$ECON_LOG\" 2>&1'"
-REPORT_CRON="0 8 * * * bash -c 'cd \"$REPO_DIR\" && $PYTHON daily_report.py >> \"$REPORT_LOG\" 2>&1'"
+REPORT_CRON="0 12 * * * bash -c 'cd \"$REPO_DIR\" && $PYTHON daily_report.py >> \"$REPORT_LOG\" 2>&1'"
 
 # Read existing crontab (ignore error if empty)
 EXISTING=$(crontab -l 2>/dev/null || true)
@@ -99,7 +99,7 @@ echo "✅ Cron jobs installed:"
 echo "   daily_scan.py   — 7:30 AM + 5:00 PM UTC daily      → $CRON_LOG"
 echo "   econ_scan.py    — 6:00 AM + 11:45 AM + 5:00 PM UTC → $ECON_LOG"
 echo "                     (11:45 = 7:45 AM ET pre-release, --pre-release flag)"
-echo "   daily_report.py — 8:00 AM UTC daily                 → $REPORT_LOG (emails you)"
+echo "   daily_report.py — 12:00 PM UTC (7:00 AM ET) daily    → $REPORT_LOG (emails you)"
 echo ""
 echo "Verify with:  crontab -l | grep -E 'daily_scan|econ_scan|daily_report'"
 echo ""
